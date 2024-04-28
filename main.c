@@ -22,7 +22,7 @@ static Colormap colormap;
 static XftDraw* xft_drawable;
 static char time_string[256] = {0};
 static int width = 100;
-static int height = 50;
+static int height = 30;
 
 void get_primary_monitor_offset(Display *display, int screen, int *x_offset, int *y_offset) {
     XRRScreenResources *resources = XRRGetScreenResources(display, RootWindow(display, screen));
@@ -42,6 +42,7 @@ void get_primary_monitor_offset(Display *display, int screen, int *x_offset, int
         XRRFreeScreenResources(resources);
         return;
     }
+
     *x_offset = crtc_info->x;
     *y_offset = crtc_info->y;
     XRRFreeCrtcInfo(crtc_info);
@@ -114,7 +115,7 @@ void draw_text_with_stroke(XftFont *font, const char *text, XftColor text_color,
         XGlyphInfo extents;
         XftTextExtentsUtf8(display, font, (XftChar8*) text, strlen(text), &extents);
         x = (width - extents.width) / 2;
-        y = (height) / 2;
+        y = (height + extents.height) / 2;
     }
 
     // Draw the stroke
@@ -123,30 +124,39 @@ void draw_text_with_stroke(XftFont *font, const char *text, XftColor text_color,
             if (i == 0 && j == 0) continue;
             XftDrawStringUtf8(xft_drawable, &stroke_color, font, x + i, y + j, (const FcChar8 *)text, strlen(text));
         }
-    }
 
+
+    }
+//    sleep(1);
     // Draw the text
     XftDrawStringUtf8(xft_drawable, &text_color, font, x, y, (const FcChar8 *)text, strlen(text));
 }
 
 
-_Noreturn static void clock_thread(){
+_Noreturn static void clock_thread(void* args){
     while (1){
+        sleep(1);
         time_t temp;
         struct tm *timeptr;
 
         temp = time(NULL);
         timeptr = localtime(&temp);
 
-        strftime(time_string,sizeof(time_string),"%H:%M", timeptr);
+        static char time_string_new[256] = {0};
 
+        strftime(time_string_new,sizeof(time_string_new),"%H:%M", timeptr);
+
+        if(strcmp(time_string_new,time_string) != 0){
+            memcpy(time_string,time_string_new,sizeof(time_string_new));
+        }else{
+            continue;
+        }
+        
         XEvent event;
         event.type = Expose;
 
         XSendEvent(display,window,False,ExposureMask,&event);
         XFlush(display);
-
-        sleep(1);
     }
 }
 
@@ -160,7 +170,7 @@ int main() {
     Window root = RootWindow(display, screen);
 
     int x_offset, y_offset;
-    get_monitor_offset(display,screen,0,&x_offset, &y_offset);
+    get_monitor_offset(display,screen,2,&x_offset, &y_offset);
 
     // create a completely transparent colormap
     XMatchVisualInfo(display, screen, 32, TrueColor, &vinfo);
@@ -181,11 +191,13 @@ int main() {
     XSelectInput(display, window, ExposureMask | EnterWindowMask | LeaveWindowMask);
     XMapWindow(display, window);
 
+    Pixmap pixmap = XCreatePixmap(display, window, width, height,vinfo.depth);
+
     // set the window to be completely transparent
     XRenderColor color;
     memset(&color, 0, sizeof(color));
     color.alpha = 0;
-    Picture picture = XRenderCreatePicture(display, window, XRenderFindVisualFormat(display, vinfo.visual), 0, NULL);
+    Picture picture = XRenderCreatePicture(display, pixmap, XRenderFindVisualFormat(display, vinfo.visual), 0, NULL);
     XRenderPictureAttributes pa;
     pa.subwindow_mode = IncludeInferiors;
     XRenderChangePicture(display, picture, CPSubwindowMode, &pa);
@@ -213,8 +225,8 @@ int main() {
     XftColorAllocName(display, vinfo.visual, colormap, "green", &font_color);
     XftColorAllocName(display, vinfo.visual, colormap, "black", &stroke_color);
 
-    xft_drawable = XftDrawCreate(display, window, vinfo.visual, colormap);
 
+    xft_drawable = XftDrawCreate(display, pixmap, vinfo.visual, colormap);
 
     pthread_t thread;
 
@@ -225,6 +237,8 @@ int main() {
     XFixesSetWindowShapeRegion(display, window, ShapeInput, 0, 0, region);
     XFixesDestroyRegion(display, region);
 
+    GC gc = XCreateGC(display, window, 0, NULL);
+
     // enter the event loop
     XEvent event;
     while (1) {
@@ -232,9 +246,12 @@ int main() {
         if (event.type == Expose) {
             // redraw the window if necessary
             XRenderFillRectangle(display, PictOpSrc, picture, &color, 0, 0, width, height);
+//            XFillRectangle(display,pixmap,gc,0,0,width,height);
             {
                 draw_text_with_stroke(font, time_string, font_color, stroke_color, 2);
             }
+
+            XCopyArea(display, pixmap, window, gc, 0, 0, width, height, 0, 0);
 
         }
     }
